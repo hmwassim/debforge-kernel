@@ -1,2 +1,83 @@
 # debforge-kernel
-A tweaked kernel based on Debian 13 backports
+
+Rebuild Debian's newest backports kernel with a few responsiveness tweaks, as installable Debian packages.
+
+```text
+linux-source + Debian's config (from <release>-backports)
+  + your patches in patches/
+  + the OPTIONS in build.sh
+  -> output/<version>/*.deb
+```
+
+## Usage
+
+```bash
+sudo ./build.sh                            # build, then print the install command
+sudo ./build.sh --suffix=desktop --install # build as 7.2.6-desktop and install it
+./build.sh --help
+```
+
+| Option | Meaning |
+|---|---|
+| `--suffix=NAME` | Added to the kernel release and package names (default `debforge`). Kernels with different suffixes install side by side. |
+| `--install` | Install the image and headers packages after building. |
+
+sudo is required, but it is only used for apt: installing missing build packages, refreshing the package lists and `--install`. Downloading, configuring and compiling run as the user who called sudo.
+
+## Requirements
+
+* Debian 13 (trixie) on x86_64
+* the backports suite enabled:
+
+  ```bash
+  echo 'deb http://deb.debian.org/debian trixie-backports main' | sudo tee /etc/apt/sources.list.d/trixie-backports.list
+  ```
+
+Missing build packages are installed automatically.
+
+## What changes
+
+Everything stays as Debian ships it, except:
+
+| Option | Debian | debforge-kernel |
+|---|---|---|
+| Timer frequency | 250 Hz | 1000 Hz |
+| Preemption | lazy (dynamic) | full (dynamic) |
+| Rust support | on | off |
+| Module compression | xz | zstd (faster to load) |
+| `teo` idle governor | not built | built (`menu` stays the default) |
+| Console takeover | immediate | deferred until there is text (no flicker at boot) |
+| IRQ time accounting | off | on (interrupt time isn't charged to the running task) |
+
+Preemption stays dynamic, so `preempt=lazy` on the kernel command line switches back without a rebuild. To try the `teo` idle governor, boot with `cpuidle.governor=teo`.
+
+To change the options, edit the `OPTIONS` block at the top of `build.sh`. It uses the kernel's own config format:
+
+```text
+CONFIG_SOMETHING=y
+CONFIG_VALUE=1000
+# CONFIG_OTHER is not set
+```
+
+Every line is checked in the final `.config`, and the build stops if one did not survive.
+
+## Patches
+
+Drop `.patch` files into `patches/`. They are applied in name order with `patch -p1` on top of Debian's source. If a patch does not apply cleanly, the build stops.
+
+## Output
+
+* `output/<version>/`: the `.deb` packages
+* `build/build.log`: the compile log
+* `cache/`: downloaded Debian packages, reused between builds
+
+Remove an installed kernel with:
+
+```bash
+sudo apt remove linux-image-7.2.6-debforge linux-headers-7.2.6-debforge
+```
+
+## Limitations
+
+* The kernel is not signed for Secure Boot. With Secure Boot on, it will not boot unless you sign it yourself.
+* Every run starts from a fresh source tree, so each build is a full compile.

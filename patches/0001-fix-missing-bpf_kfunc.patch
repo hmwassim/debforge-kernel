@@ -1,0 +1,152 @@
+From: debforge-kernel
+Subject: resolve_btfids: tag kfuncs that pahole left untagged
+
+pahole --btf_features=decl_tag_kfuncs (seen with pahole 1.30 on Debian's
+7.2.6 backports kernel) leaves some kfuncs without the "bpf_kfunc" decl
+tag. resolve_btfids only processes tagged kfuncs, so KF_IMPLICIT_ARGS
+kfuncs such as scx_bpf_kick_cpu keep the implicit bpf_prog_aux argument in
+vmlinux BTF and sched_ext schedulers fail to load.
+
+Also discover kfuncs from the BTF_KFUNCS sets, add the missing tag, and
+process them like the tagged ones. Upstream solves this by moving tag
+emission into resolve_btfids (692393104909, "resolve_btfids: Emit
+bpf_kfunc and bpf_fastcall decl tags"), which does not apply to 7.2.
+
+--- a/tools/bpf/resolve_btfids/main.c
++++ b/tools/bpf/resolve_btfids/main.c
+@@ -155,6 +155,10 @@
+ #define KF_IMPLICIT_ARGS (1 << 16)
+ #define KF_IMPL_SUFFIX "_impl"
+ 
++#ifndef BTF_SET8_KFUNCS
++#define BTF_SET8_KFUNCS (1 << 0)
++#endif
++
+ struct kfunc {
+ 	const char *name;
+ 	u32 btf_id;
+@@ -989,6 +993,105 @@
+ 	return 0;
+ }
+ 
++/*
++ * Return true if kfunc_id is listed in a BTF_KFUNCS_START() set, i.e. a set8
++ * whose header carries BTF_SET8_KFUNCS.
++ */
++static bool in_kfuncs_set8(struct object *obj, struct btf_id *kfunc_id)
++{
++	const u32 *elf_data_ptr = obj->efile.idlist->d_buf;
++	u64 set_lower_addr, set_upper_addr, addr;
++	struct btf_id *set_id;
++	struct rb_node *next;
++	u64 idx;
++
++	for (next = rb_first(&obj->sets); next; next = rb_next(next)) {
++		set_id = rb_entry(next, struct btf_id, rb_node);
++		if (set_id->kind != BTF_ID_KIND_SET8 || set_id->addr_cnt != 1)
++			continue;
++
++		set_lower_addr = set_id->addr[0];
++		set_upper_addr = set_lower_addr + set_id->cnt * sizeof(u64);
++
++		/* set8 header is { u32 cnt; u32 flags; } */
++		idx = (set_lower_addr - obj->efile.idlist_addr) / sizeof(u32) + 1;
++		if (!(elf_data_ptr[idx] & BTF_SET8_KFUNCS))
++			continue;
++
++		for (u32 i = 0; i < kfunc_id->addr_cnt; i++) {
++			addr = kfunc_id->addr[i];
++			if (set_lower_addr < addr && addr <= set_upper_addr)
++				return true;
++		}
++	}
++
++	return false;
++}
++
++static bool kfunc_collected(struct btf2btf_context *ctx, u32 func_id)
++{
++	for (u32 i = 0; i < ctx->nr_kfuncs; i++)
++		if (ctx->kfuncs[i].btf_id == func_id)
++			return true;
++	return false;
++}
++
++/*
++ * pahole --btf_features=decl_tag_kfuncs can leave some kfuncs without the
++ * "bpf_kfunc" decl tag. Find kfuncs from the BTF_KFUNCS sets instead and add
++ * the missing tag, so that KF_IMPLICIT_ARGS processing does not skip them.
++ */
++static int collect_untagged_kfuncs(struct object *obj, struct btf2btf_context *ctx)
++{
++	const u32 type_cnt = btf__type_cnt(ctx->btf);
++	struct btf *btf = ctx->btf;
++	const struct btf_type *t;
++	const char *func_name;
++	struct kfunc kfunc;
++	struct btf_id *id;
++	int err, tag_id;
++
++	for (u32 func_id = 1; func_id < type_cnt; func_id++) {
++		t = btf__type_by_id(btf, func_id);
++		if (!btf_is_func(t))
++			continue;
++
++		func_name = btf__name_by_offset(btf, t->name_off);
++		if (!func_name)
++			continue;
++
++		id = btf_id__find(&obj->funcs, func_name);
++		if (!id || id->kind != BTF_ID_KIND_SYM)
++			continue;
++
++		if (!in_kfuncs_set8(obj, id) || kfunc_collected(ctx, func_id))
++			continue;
++
++		tag_id = btf__add_decl_tag(btf, "bpf_kfunc", func_id, -1);
++		if (tag_id < 0) {
++			pr_err("ERROR: resolve_btfids: failed to add bpf_kfunc decl tag for %s\n",
++			       id->name);
++			return tag_id;
++		}
++
++		err = push_decl_tag_id(ctx, tag_id);
++		if (err)
++			return err;
++
++		kfunc.name = id->name;
++		kfunc.btf_id = func_id;
++		kfunc.flags = find_kfunc_flags(obj, id);
++
++		err = push_kfunc(ctx, &kfunc);
++		if (err)
++			return err;
++
++		pr_debug("resolve_btfids: added missing bpf_kfunc decl tag for %s\n", id->name);
++	}
++
++	return 0;
++}
++
+ static int collect_kfuncs(struct object *obj, struct btf2btf_context *ctx)
+ {
+ 	const char *tag_name, *func_name;
+@@ -999,9 +1102,6 @@
+ 	struct btf_id *id;
+ 	int err;
+ 
+-	if (ctx->nr_decl_tags == 0)
+-		return 0;
+-
+ 	for (u32 i = 0; i < ctx->nr_decl_tags; i++) {
+ 		t = btf__type_by_id(btf, ctx->decl_tags[i]);
+ 		if (btf_kflag(t) || btf_decl_tag(t)->component_idx != -1)
+@@ -1035,7 +1135,7 @@
+ 			return err;
+ 	}
+ 
+-	return 0;
++	return collect_untagged_kfuncs(obj, ctx);
+ }
+ 
+ static int build_btf2btf_context(struct object *obj, struct btf2btf_context *ctx)

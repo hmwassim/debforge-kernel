@@ -42,14 +42,13 @@ Everything stays as Debian ships it, except:
 | Option | Debian | debforge-kernel |
 |---|---|---|
 | Timer frequency | 250 Hz | 1000 Hz |
-| Preemption | lazy (dynamic) | full (dynamic) |
 | Rust support | on | off |
 | Module compression | xz | zstd (faster to load) |
 | `teo` idle governor | not built | built (`menu` stays the default) |
 | Console takeover | immediate | deferred until there is text (no flicker at boot) |
 | IRQ time accounting | off | on (interrupt time isn't charged to the running task) |
 
-Preemption stays dynamic, so `preempt=lazy` on the kernel command line switches back without a rebuild. To try the `teo` idle governor, boot with `cpuidle.governor=teo`.
+Preemption is lazy and dynamic, as in Debian, so `preempt=full` on the kernel command line switches it without a rebuild. To try the `teo` idle governor, boot with `cpuidle.governor=teo`.
 
 To change the options, edit the `OPTIONS` block at the top of `build.sh`. It uses the kernel's own config format:
 

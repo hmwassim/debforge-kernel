@@ -43,6 +43,7 @@ Everything stays as Debian ships it, except:
 |---|---|---|
 | Timer frequency | 250 Hz | 1000 Hz |
 | Rust support | on | off |
+| Kernel panic screen | QR code | short message (the QR code needs Rust) |
 | Module compression | xz | zstd (faster to load) |
 | `teo` idle governor | not built | built (`menu` stays the default) |
 | Console takeover | immediate | deferred until there is text (no flicker at boot) |
@@ -62,11 +63,13 @@ Every line is checked in the final `.config`, and the build stops if one did not
 
 ## Patches
 
-Drop `.patch` files into `patches/`. They are applied in name order with `patch -p1` on top of Debian's source. If a patch does not apply cleanly, the build stops.
+Drop `.patch` files into `patches/`, or into `patches/<series>/` (e.g. `patches/7.2/`) for patches that only apply to one kernel series. Those in `patches/` are applied first, then the series' own, each in name order with `patch -p1` on top of Debian's source. If a patch does not apply cleanly, the build stops.
+
+`patches/7.2/` backports upstream's fix for kfunc BTF, which sched_ext (scx) schedulers need: resolve_btfids tags kfuncs itself instead of relying on pahole, as Linux 7.3 does.
 
 ## Output
 
-* `output/<version>/`: the `.deb` packages
+* `output/<version>/`: `linux-image-<release>_amd64.deb` and `linux-headers-<release>_amd64.deb`, ready to upload as release assets
 * `build/build.log`: the compile log
 * `cache/`: downloaded Debian packages, reused between builds
 

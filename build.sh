@@ -8,6 +8,7 @@ CONFIG_HZ=1000
 CONFIG_PREEMPT_LAZY=y
 CONFIG_PREEMPT_DYNAMIC=y
 # CONFIG_RUST is not set
+CONFIG_DRM_PANIC_SCREEN="user"
 CONFIG_MODULE_COMPRESS_ZSTD=y
 # CONFIG_MODULE_COMPRESS_XZ is not set
 CONFIG_CPU_IDLE_GOV_TEO=y
@@ -155,7 +156,8 @@ build_kernel() {
     [ -f "$SOURCE_DIR/Makefile" ] || die "no kernel source found in $source_package"
 
     shopt -s nullglob
-    local patch_files=("$PATCHES_DIR"/*.patch)
+    # Patches for every kernel, then those for this series only (e.g. patches/7.2/).
+    local patch_files=("$PATCHES_DIR"/*.patch "$PATCHES_DIR/$KERNEL_SERIES"/*.patch)
     shopt -u nullglob
     for patch_file in "${patch_files[@]}"; do
         log "applying $(basename "$patch_file")"
@@ -215,13 +217,14 @@ build_kernel() {
     [ ${#built_packages[@]} -gt 0 ] || die "the build produced no packages, see $BUILD_LOG"
     rm -rf -- "$result_dir"
     mkdir -p "$result_dir"
+    # Keep only the image and headers, named as the release assets debforge
+    # downloads. linux-libc-dev would replace Debian's userspace headers.
     for package_file in "${built_packages[@]}"; do
         package_name="$(dpkg-deb -f "$package_file" Package)"
-        if [[ $package_name == *-dbg ]]; then
-            rm -f "$package_file"
-        else
-            mv "$package_file" "$result_dir/"
-        fi
+        case $package_name in
+            *-dbg | linux-libc-dev) rm -f "$package_file" ;;
+            *) mv "$package_file" "$result_dir/${package_name}_$(dpkg-deb -f "$package_file" Architecture).deb" ;;
+        esac
     done
 }
 
